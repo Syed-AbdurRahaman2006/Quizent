@@ -1,0 +1,57 @@
+﻿[36mvite v7.3.1 [32mbuilding client environment for production...[36m[39m
+transforming...
+[32mΓ£ô[39m 4 modules transformed.
+node.exe : [31mΓ£ù[39m Build 
+failed in 110ms
+At line:1 char:1
++ & "C:\Program 
+Files\nodejs/node.exe" 
+"C:\Program Files\nodejs/node_mo 
+...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~
+    + CategoryInfo          : Not 
+   Specified: ([31mΓ£ù[39m Bui  
+  ld failed in 110ms:String) []   
+ , RemoteException
+    + FullyQualifiedErrorId : Nat 
+   iveCommandError
+ 
+[31merror during build:
+[31m[@tailwindcss/vite:generate:b
+uild] Cannot apply unknown 
+utility class `glass-card`[31m
+file: 
+[36mE:/AdaptIQ/src/index.css[31m
+    at onInvalidCandidate (file://
+/E:/AdaptIQ/node_modules/tailwindc
+ss/dist/chunk-L5IEUH3R.mjs:21:1511
+)
+    at $e (file:///E:/AdaptIQ/node
+_modules/tailwindcss/dist/chunk-L5
+IEUH3R.mjs:16:36740)
+    at file:///E:/AdaptIQ/node_mod
+ules/tailwindcss/dist/chunk-L5IEUH
+3R.mjs:21:355
+    at Ar (file:///E:/AdaptIQ/node
+_modules/tailwindcss/dist/chunk-L5
+IEUH3R.mjs:3:1733)
+    at I (file:///E:/AdaptIQ/node_
+modules/tailwindcss/dist/chunk-L5I
+EUH3R.mjs:3:1377)
+    at Ce (file:///E:/AdaptIQ/node
+_modules/tailwindcss/dist/chunk-L5
+IEUH3R.mjs:21:172)
+    at Gi (file:///E:/AdaptIQ/node
+_modules/tailwindcss/dist/chunk-L5
+IEUH3R.mjs:38:294)
+    at async ao (file:///E:/AdaptI
+Q/node_modules/tailwindcss/dist/ch
+unk-L5IEUH3R.mjs:38:631)
+    at async vf (file:///E:/AdaptI
+Q/node_modules/tailwindcss/dist/ch
+unk-L5IEUH3R.mjs:38:1406)
+    at async uu (file:///E:/AdaptI
+Q/node_modules/@tailwindcss/node/d
+ist/index.mjs:10:3458)[39m
