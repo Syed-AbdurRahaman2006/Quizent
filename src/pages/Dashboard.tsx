@@ -5,9 +5,10 @@ import StatCard from '../components/StatCard';
 import QuizCard from '../components/QuizCard';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { getDemoQuizzes } from '../utils/seedData';
-import { determineCompetency, getCompetencyColor } from '../utils/adaptiveEngine';
-import { getAttempts, getTopicPerformances, toAttempt } from '../utils/storage';
 import { Quiz, Attempt, TopicPerformance } from '../types';
+import { getUserAttempts } from '../services/attempts';
+import { auth, db } from '../lib/firebase';
+import { collection, query, where, getDocs } from 'firebase/firestore';
 import {
     Trophy,
     Target,
@@ -59,19 +60,105 @@ export default function Dashboard() {
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        const stored = getAttempts();
-        const runtimeAttempts = stored.map(toAttempt);
-        const perfs = getTopicPerformances(stored);
-        const streakDays = calcStreak(stored.map((a) => a.date));
+        const loadDashboardData = async () => {
+            const currentUser = auth.currentUser;
+            const uid = currentUser?.uid || user?.id; // Try Firebase Auth first, fallback to context
 
-        setQuizzes(getDemoQuizzes());
-        setAttempts(runtimeAttempts);
-        setPerformances(perfs);
-        setStreak(streakDays);
-        setLoading(false);
-    }, []);
+            if (!uid) {
+                // Not authenticated yet, wait for state
+                return;
+            }
 
-    if (loading) return <Layout><LoadingSpinner size="lg" /></Layout>;
+            try {
+                // Fetch attempts primarily from Firestore
+                const q = query(
+                    collection(db, "quizAttempts"),
+                    where("userId", "==", uid)
+                );
+
+                const snapshot = await getDocs(q);
+                let userAttempts: any[] = [];
+
+                if (!snapshot.empty) {
+                    snapshot.forEach(doc => {
+                        userAttempts.push({ id: doc.id, ...doc.data() });
+                    });
+                }
+
+                setQuizzes(getDemoQuizzes());
+
+                if (userAttempts.length === 0) {
+                    setAttempts([]);
+                    setPerformances([]);
+                    setStreak(0);
+                } else {
+                    // Build runtime Attempt matching UI layer explicitly regardless of fetch location
+                    const runtimeAtts = userAttempts.map((ea: any, idx: number) => {
+                        let dateVal = new Date();
+                        if (ea.timestamp && typeof ea.timestamp.toDate === 'function') {
+                            dateVal = ea.timestamp.toDate();
+                        } else if (ea.date) {
+                            dateVal = new Date(ea.date);
+                        }
+
+                        return {
+                            id: ea.id || (ea.quizId + '_' + idx),
+                            userId: ea.userId,
+                            quizId: ea.quizId,
+                            quizTitle: ea.topic, // mapped field
+                            language: ea.language || 'JavaScript', // generic fallback
+                            topicName: ea.topic,
+                            score: ea.score,
+                            totalQuestions: ea.totalQuestions,
+                            accuracy: ea.accuracy,
+                            startedAt: dateVal,
+                            completedAt: dateVal
+                        };
+                    });
+
+                    setAttempts(runtimeAtts.reverse());
+
+                    const map: Record<string, { topicName: string; totalAccuracy: number; count: number; language: string }> = {};
+                    userAttempts.forEach((ea: any) => {
+                        if (!map[ea.topic]) map[ea.topic] = { topicName: ea.topic, totalAccuracy: 0, count: 0, language: ea.language || 'JavaScript' };
+                        map[ea.topic].totalAccuracy += ea.accuracy;
+                        map[ea.topic].count += 1;
+                    });
+
+                    const perfs = Object.values(map).map((v: any, i) => {
+                        const avg = v.totalAccuracy / v.count;
+                        return {
+                            topicId: `topic_${i}`,
+                            topicName: v.topicName,
+                            language: v.language,
+                            accuracy: Math.round(avg),
+                            competency: avg >= 80 ? 'strong' : avg >= 50 ? 'medium' : 'weak',
+                            attemptsCount: v.count
+                        };
+                    });
+
+                    setPerformances(perfs as any);
+                    const dates = userAttempts.map((ea: any) => ea.date);
+                    setStreak(calcStreak(dates));
+                }
+            } catch (err) {
+                console.error("Failed to load dashboard data", err);
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        // If we previously loaded data but user changed/logged out, reset state
+        if (!user && !loading) {
+            setAttempts([]);
+            setPerformances([]);
+            setStreak(0);
+        } else {
+            loadDashboardData();
+        }
+    }, [user]);
+
+    if (loading && !attempts.length) return <Layout><LoadingSpinner size="lg" /></Layout>;
 
     const totalQuizzes = attempts.length;
     const avgAccuracy = attempts.length > 0
@@ -220,28 +307,34 @@ export default function Dashboard() {
                             </Link>
                         </div>
                         <div className="space-y-3">
-                            {attempts.slice(0, 5).map((attempt) => (
-                                <div
-                                    key={attempt.id}
-                                    className="flex items-center justify-between p-3.5 rounded-xl bg-slate-50 hover:bg-indigo-50/50 border border-transparent hover:border-indigo-100 transition-all duration-150"
-                                >
-                                    <div className="flex items-center gap-3">
-                                        <div className="p-2 rounded-lg bg-indigo-50">
-                                            <BookOpen className="w-4 h-4 text-indigo-500" />
-                                        </div>
-                                        <div>
-                                            <p className="text-sm font-semibold text-slate-900">{attempt.quizTitle}</p>
-                                            <p className="text-xs text-slate-400 font-medium">{attempt.language} • {new Date(attempt.startedAt).toLocaleDateString()}</p>
-                                        </div>
-                                    </div>
-                                    <div className="text-right">
-                                        <p className={`text-sm font-bold ${attempt.accuracy >= 70 ? 'text-indigo-600' : attempt.accuracy >= 40 ? 'text-violet-600' : 'text-cyan-600'}`}>
-                                            {attempt.accuracy.toFixed(0)}%
-                                        </p>
-                                        <p className="text-xs text-slate-400 font-medium">{attempt.score}/{attempt.totalQuestions}</p>
-                                    </div>
+                            {attempts.length === 0 ? (
+                                <div className="p-6 text-center border-2 border-dashed border-slate-200 rounded-xl bg-slate-50">
+                                    <p className="text-sm font-semibold text-slate-500">No quizzes attempted yet</p>
                                 </div>
-                            ))}
+                            ) : (
+                                attempts.slice(0, 5).map((attempt) => (
+                                    <div
+                                        key={attempt.id}
+                                        className="flex items-center justify-between p-3.5 rounded-xl bg-slate-50 hover:bg-indigo-50/50 border border-transparent hover:border-indigo-100 transition-all duration-150"
+                                    >
+                                        <div className="flex items-center gap-3">
+                                            <div className="p-2 rounded-lg bg-indigo-50">
+                                                <BookOpen className="w-4 h-4 text-indigo-500" />
+                                            </div>
+                                            <div>
+                                                <p className="text-sm font-semibold text-slate-900">{attempt.quizTitle}</p>
+                                                <p className="text-xs text-slate-400 font-medium">{attempt.language} • {new Date(attempt.startedAt).toLocaleDateString()}</p>
+                                            </div>
+                                        </div>
+                                        <div className="text-right">
+                                            <p className={`text-sm font-bold ${attempt.accuracy >= 70 ? 'text-indigo-600' : attempt.accuracy >= 40 ? 'text-violet-600' : 'text-cyan-600'}`}>
+                                                {attempt.accuracy.toFixed(0)}%
+                                            </p>
+                                            <p className="text-xs text-slate-400 font-medium">{attempt.score}/{attempt.totalQuestions}</p>
+                                        </div>
+                                    </div>
+                                ))
+                            )}
                         </div>
                     </div>
 
@@ -249,33 +342,39 @@ export default function Dashboard() {
                     <div className="glass-card p-6">
                         <h2 className="text-[17px] font-bold text-slate-900 mb-5">Topic Competency</h2>
                         <div className="space-y-3">
-                            {performances.map((perf) => (
-                                <div
-                                    key={perf.topicId}
-                                    className="flex items-center justify-between p-3.5 rounded-xl bg-slate-50 hover:bg-slate-100/70 transition-colors"
-                                >
-                                    <div>
-                                        <p className="text-sm font-semibold text-slate-900">{perf.topicName}</p>
-                                        <p className="text-xs text-slate-400 font-medium">{perf.language}</p>
-                                    </div>
-                                    <div className="flex items-center gap-3">
-                                        <div className="w-24 h-2 bg-slate-100 rounded-full overflow-hidden">
-                                            <div
-                                                className={`h-full rounded-full transition-all duration-500 ${perf.competency === 'strong'
-                                                    ? 'bg-indigo-500'
-                                                    : perf.competency === 'medium'
-                                                        ? 'bg-violet-400'
-                                                        : 'bg-cyan-400'
-                                                    }`}
-                                                style={{ width: `${perf.accuracy}%` }}
-                                            />
-                                        </div>
-                                        <span className={`text-xs font-bold capitalize ${perf.competency === 'strong' ? 'text-indigo-600' : perf.competency === 'medium' ? 'text-violet-500' : 'text-cyan-600'}`}>
-                                            {perf.competency}
-                                        </span>
-                                    </div>
+                            {performances.length === 0 ? (
+                                <div className="p-6 text-center border-2 border-dashed border-slate-200 rounded-xl bg-slate-50">
+                                    <p className="text-sm font-semibold text-slate-500">No quizzes attempted yet</p>
                                 </div>
-                            ))}
+                            ) : (
+                                performances.map((perf) => (
+                                    <div
+                                        key={perf.topicId}
+                                        className="flex items-center justify-between p-3.5 rounded-xl bg-slate-50 hover:bg-slate-100/70 transition-colors"
+                                    >
+                                        <div>
+                                            <p className="text-sm font-semibold text-slate-900">{perf.topicName}</p>
+                                            <p className="text-xs text-slate-400 font-medium">{perf.language}</p>
+                                        </div>
+                                        <div className="flex items-center gap-3">
+                                            <div className="w-24 h-2 bg-slate-100 rounded-full overflow-hidden">
+                                                <div
+                                                    className={`h-full rounded-full transition-all duration-500 ${perf.competency === 'strong'
+                                                        ? 'bg-indigo-500'
+                                                        : perf.competency === 'medium'
+                                                            ? 'bg-violet-400'
+                                                            : 'bg-cyan-400'
+                                                        }`}
+                                                    style={{ width: `${perf.accuracy}%` }}
+                                                />
+                                            </div>
+                                            <span className={`text-xs font-bold capitalize ${perf.competency === 'strong' ? 'text-indigo-600' : perf.competency === 'medium' ? 'text-violet-500' : 'text-cyan-600'}`}>
+                                                {perf.competency}
+                                            </span>
+                                        </div>
+                                    </div>
+                                ))
+                            )}
                         </div>
 
                         <Link

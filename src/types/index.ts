@@ -34,6 +34,7 @@ export interface Question {
     questionText: string;
     options: string[];
     correctAnswer: number; // index of correct option
+    explanation?: string;
 }
 
 export interface Attempt {
@@ -57,6 +58,7 @@ export interface Answer {
     selectedOption: number;
     isCorrect: boolean;
     difficulty: Difficulty;
+    timeSpent: number;
     timestamp: Date;
 }
 

@@ -42,6 +42,7 @@ VITE_FIREBASE_STORAGE_BUCKET=your_project.appspot.com
 VITE_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
 VITE_FIREBASE_APP_ID=your_app_id
 VITE_GEMINI_API_KEY=your_gemini_key  # Optional
+VITE_RECAPTCHA_SITE_KEY=your_recaptcha_site_key
 ```
 
 ### 3. Firebase Setup
@@ -118,3 +119,5 @@ The app works without Firebase credentials using built-in demo data. Authenticat
 | AI | Google Gemini API |
 | Hosting | Firebase Hosting |
 | Icons | Lucide React |
+
+# Quizent

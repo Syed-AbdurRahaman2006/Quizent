@@ -8,9 +8,9 @@ interface AuthContextType {
     loading: boolean;
     isAdmin: boolean;
     isDemoMode: boolean;
-    signIn: () => Promise<void>;
+    signIn: (email: string, password: string) => Promise<AppUser>;
+    signUp: (email: string, password: string, name: string, role: 'user' | 'admin') => Promise<AppUser>;
     signOut: () => Promise<void>;
-    enterDemoMode: (role?: 'user' | 'admin', email?: string) => void;
 }
 
 const AuthContext = createContext<AuthContextType>({
@@ -19,30 +19,16 @@ const AuthContext = createContext<AuthContextType>({
     loading: true,
     isAdmin: false,
     isDemoMode: false,
-    signIn: async () => { },
+    signIn: async () => ({} as AppUser),
+    signUp: async () => ({} as AppUser),
     signOut: async () => { },
-    enterDemoMode: () => { },
 });
-
-function isFirebaseConfigured(): boolean {
-    return !!(
-        import.meta.env.VITE_FIREBASE_API_KEY &&
-        import.meta.env.VITE_FIREBASE_API_KEY !== 'your_api_key_here'
-    );
-}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
     const [user, setUser] = useState<AppUser | null>(null);
     const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
     const [loading, setLoading] = useState(true);
-    const [isDemoMode, setIsDemoMode] = useState(false);
-
     useEffect(() => {
-        if (!isFirebaseConfigured()) {
-            console.info('Firebase not configured. Running in demo mode available.');
-            setLoading(false);
-            return;
-        }
 
         // Dynamically import to avoid crashes when Firebase isn't configured
         let unsubscribe: (() => void) | undefined;
@@ -55,21 +41,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                         const appUser = await getOrCreateUser(fbUser);
                         setUser(appUser);
                     } catch (err: any) {
-                        // If Firestore is offline, don't crash the auth state—use a fallback user session based on cached auth
-                        if (err?.message?.includes('offline') || err?.code === 'unavailable') {
-                            console.warn('Firestore is offline. Using cached auth user data.');
-                            setUser({
-                                id: fbUser.uid,
-                                name: fbUser.displayName || 'User',
-                                email: fbUser.email || '',
-                                photoURL: fbUser.photoURL || undefined,
-                                role: 'user',
-                                createdAt: new Date(),
-                            });
-                        } else {
-                            console.error('Error getting user data:', err);
-                            setUser(null);
-                        }
+                        console.error('Error getting user data in auth state change:', err);
+                        // Unlike the silent fallback we previously had, if we can't get the role,
+                        // we shouldn't grant authenticated status silently.
+                        setUser(null);
                     }
                 } else {
                     setUser(null);
@@ -92,26 +67,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         };
     }, []);
 
-    const signIn = async () => {
-        if (!isFirebaseConfigured()) {
-            throw new Error('Firebase is not configured. Please add Firebase credentials to .env file.');
-        }
+    const signIn = async (email: string, password: string): Promise<AppUser> => {
         try {
-            const { signInWithGoogle } = await import('../services/auth');
-            const appUser = await signInWithGoogle();
+            const { signInWithEmail } = await import('../services/auth');
+            const appUser = await signInWithEmail(email, password);
             setUser(appUser);
+            return appUser;
         } catch (err) {
             console.error('Sign in error:', err);
             throw err;
         }
     };
 
-    const signOut = async () => {
-        if (isDemoMode) {
-            setUser(null);
-            setIsDemoMode(false);
-            return;
+    const signUp = async (email: string, password: string, name: string, role: 'user' | 'admin'): Promise<AppUser> => {
+        try {
+            const { signUpWithEmail } = await import('../services/auth');
+            const appUser = await signUpWithEmail(email, password, name, role);
+            setUser(appUser);
+            return appUser;
+        } catch (err) {
+            console.error('Sign up error:', err);
+            throw err;
         }
+    };
+
+    const signOut = async () => {
         try {
             const { signOut: authSignOut } = await import('../services/auth');
             await authSignOut();
@@ -122,18 +102,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setFirebaseUser(null);
     };
 
-    const enterDemoMode = (role: 'user' | 'admin' = 'admin', email?: string) => {
-        const demoUser: AppUser = {
-            id: 'demo_user',
-            name: role === 'admin' ? 'Admin User' : 'Demo User',
-            email: email || 'demo@quizent.app',
-            role,
-            createdAt: new Date(),
-        };
-        setUser(demoUser);
-        setIsDemoMode(true);
-    };
-
     return (
         <AuthContext.Provider
             value={{
@@ -141,10 +109,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 firebaseUser,
                 loading,
                 isAdmin: user?.role === 'admin',
-                isDemoMode,
+                isDemoMode: false,
                 signIn,
+                signUp,
                 signOut,
-                enterDemoMode,
             }}
         >
             {children}

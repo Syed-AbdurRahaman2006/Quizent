@@ -1,33 +1,58 @@
 import { useAuth } from '../hooks/useAuth';
-import { useNavigate } from 'react-router-dom';
-import { Zap, Brain, BarChart3, Sparkles, Play } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
+import { Zap, Brain, BarChart3, Sparkles, Lock, Eye, EyeOff } from 'lucide-react';
+import ReCAPTCHA from 'react-google-recaptcha';
+import { useEffect, useState, FormEvent } from 'react';
+import InputField from '../components/InputField';
 
 export default function Login() {
-    const { user, signIn, loading, enterDemoMode } = useAuth();
+    const { user, signIn, loading } = useAuth();
     const navigate = useNavigate();
+
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
     const [error, setError] = useState<string | null>(null);
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    const [showPassword, setShowPassword] = useState(false);
+    const [captchaVerified, setCaptchaVerified] = useState(false);
 
-    useEffect(() => {
-        if (user && !loading) {
-            navigate('/dashboard');
-        }
-    }, [user, loading, navigate]);
-
-    const handleSignIn = async () => {
-        setError(null);
-        try {
-            await signIn();
-            navigate('/dashboard');
-        } catch (err: any) {
-            console.error('Sign in failed:', err);
-            setError(err?.message || 'Sign in failed. Check Firebase configuration.');
+    const handleCaptcha = (value: string | null) => {
+        if (value) {
+            setCaptchaVerified(true);
         }
     };
 
-    const handleDemoMode = () => {
-        enterDemoMode();
-        navigate('/dashboard');
+    // Removed useEffect redirect to prevent race conditions during auth resolution
+
+    const handleSignIn = async (e: FormEvent) => {
+        e.preventDefault();
+
+        if (!captchaVerified) {
+            setError("Please verify the CAPTCHA before signing in.");
+            return;
+        }
+
+        setError(null);
+        setIsSubmitting(true);
+        try {
+            const appUser = await signIn(email, password);
+            if (appUser.role === 'admin') {
+                navigate('/admin/dashboard');
+            } else {
+                navigate('/dashboard');
+            }
+        } catch (err: any) {
+            console.error('Sign in failed:', err);
+            let errorMessage = 'Invalid email or password.';
+            if (err?.code === 'auth/user-not-found') errorMessage = 'User not found.';
+            else if (err?.code === 'auth/wrong-password') errorMessage = 'Incorrect password.';
+            else if (err?.code === 'permission-denied') errorMessage = 'Permission denied retrieving user role.';
+            else if (err?.message) errorMessage = err.message;
+
+            setError(errorMessage);
+        } finally {
+            setIsSubmitting(false);
+        }
     };
 
     return (
@@ -84,49 +109,71 @@ export default function Login() {
                     </div>
 
                     <div className="glass-card p-8">
-                        <h2 className="text-2xl font-bold mb-2">Welcome back</h2>
-                        <p className="text-surface-200/50 mb-8">Sign in to continue your learning journey</p>
+                        <h2 className="text-2xl font-bold mb-2 text-slate-900">Welcome back</h2>
+                        <p className="text-slate-500 mb-8">Sign in to continue your learning journey</p>
 
                         {error && (
-                            <div className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-sm text-red-400">
+                            <div className="mb-6 p-3 rounded-xl bg-red-50 border border-red-100 text-sm text-red-600">
                                 {error}
                             </div>
                         )}
 
-                        <button
-                            onClick={handleSignIn}
-                            disabled={loading}
-                            className="w-full flex items-center justify-center gap-3 bg-white text-gray-800 font-semibold px-6 py-3.5 rounded-xl hover:bg-gray-100 transition-all duration-200 shadow-lg hover:shadow-xl hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                            <svg className="w-5 h-5" viewBox="0 0 24 24">
-                                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" />
-                                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
-                                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
-                                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
-                            </svg>
-                            Continue with Google
-                        </button>
+                        <form onSubmit={handleSignIn} className="space-y-4">
+                            <InputField
+                                id="email"
+                                label="Email"
+                                type="email"
+                                placeholder="you@example.com"
+                                value={email}
+                                onChange={(e) => setEmail(e.target.value)}
+                            />
 
-                        <div className="mt-6 flex items-center gap-3">
-                            <div className="flex-1 h-px bg-white/[0.06]" />
-                            <span className="text-xs text-surface-200/30">or</span>
-                            <div className="flex-1 h-px bg-white/[0.06]" />
+                            <div className="space-y-1.5 mb-4 mt-4">
+                                <label className="block text-sm font-semibold text-slate-700">Password</label>
+                                <div className="relative group">
+                                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                        <Lock className="h-5 w-5 text-slate-400 group-focus-within:text-violet-500 transition-colors" />
+                                    </div>
+                                    <input
+                                        type={showPassword ? "text" : "password"}
+                                        placeholder="••••••••"
+                                        value={password}
+                                        onChange={(e) => setPassword(e.target.value)}
+                                        required
+                                        className="pl-10 pr-12 w-full px-4 py-3 border border-slate-200 rounded-xl bg-white/50 text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-4 focus:ring-violet-500/10 focus:border-violet-500 transition-all font-medium"
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowPassword(!showPassword)}
+                                        className="absolute right-3.5 top-3 text-slate-400 hover:text-slate-600 transition-colors"
+                                    >
+                                        {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="flex justify-center mt-6 mb-2">
+                                <ReCAPTCHA
+                                    sitekey="6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI"
+                                    onChange={handleCaptcha}
+                                />
+                            </div>
+
+                            <button
+                                type="submit"
+                                disabled={loading || isSubmitting}
+                                className="w-full flex items-center justify-center gap-3 bg-gradient-to-r from-primary-600 to-violet-600 text-white font-semibold px-6 py-3.5 rounded-xl hover:shadow-xl hover:-translate-y-0.5 active:translate-y-0 transition-all duration-300 mt-2 disabled:opacity-70 disabled:cursor-not-allowed"
+                            >
+                                {isSubmitting ? 'Signing in...' : 'Sign In'}
+                            </button>
+                        </form>
+
+                        <div className="mt-8 text-center text-sm text-slate-500">
+                            Don't have an account?{' '}
+                            <Link to="/signup" className="font-semibold text-primary-600 hover:text-primary-700 transition-colors hover:underline">
+                                Sign up instead
+                            </Link>
                         </div>
-
-                        <button
-                            onClick={handleDemoMode}
-                            className="mt-4 w-full flex items-center justify-center gap-2 bg-gradient-to-r from-violet-600/80 to-primary-600/80 text-white font-semibold px-6 py-3.5 rounded-xl hover:from-violet-500/80 hover:to-primary-500/80 transition-all duration-200 shadow-lg shadow-violet-500/15 hover:shadow-violet-500/25 hover:-translate-y-0.5 active:translate-y-0"
-                        >
-                            <Play className="w-4 h-4" />
-                            Try Demo Mode
-                        </button>
-                        <p className="mt-2 text-xs text-surface-200/30 text-center">
-                            Explore all features with sample data — no sign-in required
-                        </p>
-
-                        <p className="mt-6 text-xs text-surface-200/20 text-center">
-                            By signing in, you agree to our Terms of Service and Privacy Policy
-                        </p>
                     </div>
                 </div>
             </div>

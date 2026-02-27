@@ -11,7 +11,7 @@ import {
     orderBy,
     serverTimestamp,
 } from 'firebase/firestore';
-import { db } from '../firebase/config';
+import { db } from '../lib/firebase';
 import { Topic } from '../types';
 
 const COLLECTION = 'topics';

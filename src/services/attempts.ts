@@ -8,7 +8,7 @@ import {
     where,
     orderBy,
 } from 'firebase/firestore';
-import { db } from '../firebase/config';
+import { db } from '../lib/firebase';
 import { Attempt, Answer } from '../types';
 
 export async function createAttempt(

@@ -16,8 +16,9 @@ import {
     Filler,
 } from 'chart.js';
 import { Bar, Doughnut, Line } from 'react-chartjs-2';
-import { getAttempts, getTopicPerformances, getDifficultyBreakdown } from '../../utils/storage';
+import { db } from '../../lib/firebase';
 import { getDemoQuizzes } from '../../utils/seedData';
+import { collection, doc, getDoc, onSnapshot } from 'firebase/firestore';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, Tooltip, Legend, PointElement, LineElement, Filler);
 
@@ -26,6 +27,7 @@ export default function AdminDashboard() {
     const [stats, setStats] = useState({
         totalQuizzes: 0,
         totalAttempts: 0,
+        uniqueUsers: 0,
         avgAccuracy: 0,
         topicAccuracy: [] as { topic: string; accuracy: number }[],
         completionRates: [] as { month: string; rate: number }[],
@@ -34,48 +36,117 @@ export default function AdminDashboard() {
     });
 
     useEffect(() => {
-        const stored = getAttempts();
-        const performances = getTopicPerformances(stored);
-        const difficulty = getDifficultyBreakdown(stored);
+        const unsubscribe = onSnapshot(collection(db, "quizAttempts"), async (attemptsSnap) => {
+            try {
+                const stored: any[] = [];
+                attemptsSnap.forEach(doc => {
+                    stored.push({ id: doc.id, ...doc.data() });
+                });
 
-        const avgAccuracy = stored.length > 0
-            ? Math.round(stored.reduce((s, a) => s + a.accuracy, 0) / stored.length)
-            : 0;
+                // Cast firestore objects slightly
+                const normalized = stored.map(a => ({
+                    ...a,
+                    startedAt: a.createdAt && typeof a.createdAt.toDate === 'function' ? a.createdAt.toDate() : new Date(a.date || Date.now())
+                }));
 
-        // Build last-6-months completion rate (attempts per month)
-        const now = new Date();
-        const months: { month: string; rate: number }[] = [];
-        for (let i = 5; i >= 0; i--) {
-            const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-            const label = d.toLocaleString('default', { month: 'short' });
-            const monthStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-            const count = stored.filter((a) => a.date.startsWith(monthStr)).length;
-            months.push({ month: label, rate: count });
-        }
+                const avgAccuracy = normalized.length > 0
+                    ? Math.round(normalized.reduce((s, a) => s + a.accuracy, 0) / normalized.length)
+                    : 0;
 
-        // Difficulty distribution as percentages
-        const totalAns = (difficulty.easy.total + difficulty.medium.total + difficulty.hard.total) || 1;
-        const diffDist = {
-            easy: Math.round((difficulty.easy.total / totalAns) * 100),
-            medium: Math.round((difficulty.medium.total / totalAns) * 100),
-            hard: Math.round((difficulty.hard.total / totalAns) * 100),
-        };
+                // Inline: Topic Accuracy Map
+                const map: Record<string, { totalAccuracy: number; count: number }> = {};
+                normalized.forEach((a) => {
+                    const topic = a.topic || 'Unknown';
+                    if (!map[topic]) map[topic] = { totalAccuracy: 0, count: 0 };
+                    map[topic].totalAccuracy += a.accuracy;
+                    map[topic].count += 1;
+                });
 
-        setStats({
-            totalQuizzes: getDemoQuizzes().length,
-            totalAttempts: stored.length,
-            avgAccuracy,
-            topicAccuracy: performances.map((p) => ({ topic: p.topicName, accuracy: p.accuracy })),
-            completionRates: months,
-            difficultyDistribution: diffDist,
-            recentAttempts: stored.slice(0, 8).map((a) => ({
-                user: a.userId === 'anonymous' ? 'Guest' : a.userId,
-                quiz: a.quizTitle,
-                accuracy: Math.round(a.accuracy),
-                date: a.date.slice(0, 10),
-            })),
+                const performances = Object.entries(map).map(([topic, v]) => ({
+                    topic,
+                    accuracy: Math.round(v.totalAccuracy / v.count)
+                }));
+
+                const uniqueUsers = [...new Set(normalized.map(a => a.userId))].length;
+
+                // Build last-6-months completion rate (attempts per month)
+                const now = new Date();
+                const months: { month: string; rate: number }[] = [];
+                for (let i = 5; i >= 0; i--) {
+                    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+                    const label = d.toLocaleString('default', { month: 'short' });
+                    const monthStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+                    const count = normalized.filter((a) => {
+                        const mString = `${a.startedAt.getFullYear()}-${String(a.startedAt.getMonth() + 1).padStart(2, '0')}`;
+                        return mString === monthStr;
+                    }).length;
+                    months.push({ month: label, rate: count });
+                }
+
+                // Difficulty distribution
+                let easyCount = 0, mediumCount = 0, hardCount = 0;
+                normalized.forEach(a => {
+                    if (a.difficultyBreakdown) {
+                        easyCount += a.difficultyBreakdown.easy?.total || 0;
+                        mediumCount += a.difficultyBreakdown.medium?.total || 0;
+                        hardCount += a.difficultyBreakdown.hard?.total || 0;
+                    }
+                });
+
+                const totalAns = (easyCount + mediumCount + hardCount) || 1;
+                const diffDist = {
+                    easy: Math.round((easyCount / totalAns) * 100) || 33,
+                    medium: Math.round((mediumCount / totalAns) * 100) || 34,
+                    hard: Math.round((hardCount / totalAns) * 100) || 33,
+                };
+
+                // Fetch Real User Profiles for UIDs
+                const userProfilesMap: Record<string, { name: string, email: string }> = {};
+                const uniqueUids = Array.from(new Set(normalized.map(a => String(a.userId))));
+
+                await Promise.all(uniqueUids.map(async (uid) => {
+                    if (!uid || uid === 'anonymous') return;
+                    try {
+                        const userDoc = await getDoc(doc(db, "users", uid));
+                        if (userDoc.exists()) {
+                            const data = userDoc.data();
+                            userProfilesMap[uid] = {
+                                name: data.name || data.fullName || 'Unknown User',
+                                email: data.email || 'No Email'
+                            };
+                        }
+                    } catch (e) { /* ignore single fetch errors */ }
+                }));
+
+                setStats({
+                    totalQuizzes: getDemoQuizzes().length,
+                    totalAttempts: normalized.length,
+                    uniqueUsers,
+                    avgAccuracy,
+                    topicAccuracy: performances.map((p) => ({ topic: p.topic, accuracy: p.accuracy })),
+                    completionRates: months,
+                    difficultyDistribution: diffDist,
+                    recentAttempts: normalized.sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime()).slice(0, 8).map((a) => {
+                        // Priority: Explicit UserName stored in Attempt -> Firestore Profile Name -> Fallback Raw Email/UID
+                        const fallbackName = userProfilesMap[String(a.userId)]?.name || a.userEmail || a.userId;
+                        const finalDisplayName = (a.userName && a.userName !== 'User') ? a.userName : fallbackName;
+
+                        return {
+                            user: finalDisplayName === 'anonymous' ? 'Guest' : finalDisplayName,
+                            quiz: a.topic,
+                            accuracy: Math.round(a.accuracy),
+                            date: a.startedAt.toISOString().slice(0, 10),
+                        };
+                    }),
+                });
+            } catch (err) {
+                console.error("Failed to load admin stats:", err);
+            } finally {
+                setLoading(false);
+            }
         });
-        setLoading(false);
+
+        return () => unsubscribe();
     }, []);
 
     if (loading) return <Layout><LoadingSpinner size="lg" /></Layout>;
@@ -203,10 +274,10 @@ export default function AdminDashboard() {
 
                 {/* Stats */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-                    <StatCard title="Total Quizzes" value={stats.totalQuizzes} icon={BookOpen} color="primary" />
-                    <StatCard title="Quiz Attempts" value={stats.totalAttempts} icon={Trophy} color="amber" />
+                    <StatCard title="Total Attempts" value={stats.totalAttempts} icon={Trophy} color="amber" />
+                    <StatCard title="Unique Users" value={stats.uniqueUsers} icon={Users} color="primary" />
                     <StatCard title="Avg. Accuracy" value={`${stats.avgAccuracy}%`} icon={TrendingUp} color="violet" />
-                    <StatCard title="Topics Covered" value={stats.topicAccuracy.length} icon={Users} color="emerald" />
+                    <StatCard title="Topics Covered" value={stats.topicAccuracy.length} icon={BookOpen} color="emerald" />
                 </div>
 
                 {/* Charts Row 1 */}

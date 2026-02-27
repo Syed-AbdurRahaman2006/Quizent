@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import Layout from '../components/Layout';
 import LoadingSpinner from '../components/LoadingSpinner';
-import { getAIRecommendations } from '../services/gemini';
+import { generateInsights } from '../utils/generateInsights';
 import { calculateDifficultyBreakdown, determineCompetency, getCompetencyColor, getDifficultyLabel } from '../utils/adaptiveEngine';
 import { Answer, AIRecommendation, TopicPerformance, Competency } from '../types';
 import {
@@ -46,8 +46,7 @@ export default function Results() {
     const { quizId } = useParams<{ quizId: string }>();
     const navigate = useNavigate();
     const [resultData, setResultData] = useState<QuizResultData | null>(null);
-    const [aiRecommendations, setAiRecommendations] = useState<AIRecommendation | null>(null);
-    const [loadingAI, setLoadingAI] = useState(true);
+    const [aiRecommendations, setAiRecommendations] = useState<{ strength: string, weakness: string, recommendation: string } | null>(null);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
@@ -57,22 +56,9 @@ export default function Results() {
             setResultData(data);
             setLoading(false);
 
-            // Get AI recommendations
-            const performances: TopicPerformance[] = [
-                {
-                    topicId: 'topic_0',
-                    topicName: data.quizTitle || 'Quiz Topic',
-                    language: data.language || 'Programming',
-                    accuracy: data.accuracy,
-                    competency: determineCompetency(data.accuracy),
-                    attemptsCount: 1,
-                },
-            ];
-
-            getAIRecommendations(performances)
-                .then((rec) => setAiRecommendations(rec))
-                .catch(console.error)
-                .finally(() => setLoadingAI(false));
+            // Generate Insights locally using rule-based Engine
+            const insights = generateInsights({ accuracy: data.accuracy, topic: data.quizTitle || 'Programming' });
+            setAiRecommendations(insights);
         } else {
             setLoading(false);
         }
@@ -202,8 +188,8 @@ export default function Results() {
                 <div className="glass-card p-8 mb-6">
                     <div className="flex flex-col md:flex-row items-center gap-6">
                         <div className={`p-4 rounded-2xl ${competency === 'strong' ? 'bg-indigo-50 border border-indigo-100' :
-                                competency === 'medium' ? 'bg-violet-50 border border-violet-100' :
-                                    'bg-cyan-50 border border-cyan-100'
+                            competency === 'medium' ? 'bg-violet-50 border border-violet-100' :
+                                'bg-cyan-50 border border-cyan-100'
                             }`}>
                             <Trophy className={`w-10 h-10 ${competency === 'strong' ? 'text-indigo-600' : competency === 'medium' ? 'text-violet-600' : 'text-cyan-600'}`} />
                         </div>
@@ -270,8 +256,8 @@ export default function Results() {
                             <div
                                 key={i}
                                 className={`flex items-center justify-between p-3.5 rounded-xl border ${answer.isCorrect
-                                        ? 'bg-indigo-50 border-indigo-100'
-                                        : 'bg-red-50 border-red-100'
+                                    ? 'bg-indigo-50 border-indigo-100'
+                                    : 'bg-red-50 border-red-100'
                                     }`}
                             >
                                 <div className="flex items-center gap-3">
@@ -305,72 +291,46 @@ export default function Results() {
                         </div>
                         <div>
                             <h3 className="text-[17px] font-bold text-slate-900">AI-Powered Insights</h3>
-                            <p className="text-xs text-slate-500 font-medium">Personalized recommendations by Gemini</p>
+                            <p className="text-xs text-slate-500 font-medium">Personalized recommendations based on your performance</p>
                         </div>
                     </div>
 
-                    {loadingAI ? (
-                        <div className="flex items-center gap-3 p-4">
-                            <LoadingSpinner size="sm" />
-                            <span className="text-slate-500 font-medium">Analyzing your performance...</span>
-                        </div>
-                    ) : aiRecommendations ? (
+                    {aiRecommendations ? (
                         <div className="space-y-6">
-                            {/* Summary */}
-                            <div className="p-4 rounded-xl bg-slate-50 border border-slate-100">
-                                <p className="text-slate-700 leading-relaxed">{aiRecommendations.summary}</p>
-                            </div>
-
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                {/* Strengths */}
+                                {/* Strength */}
                                 <div className="space-y-2">
                                     <h4 className="text-sm font-bold text-indigo-700 flex items-center gap-2">
-                                        <CheckCircle2 className="w-4 h-4" /> Strengths
+                                        <CheckCircle2 className="w-4 h-4" /> Strength
                                     </h4>
-                                    {aiRecommendations.strengths.map((s, i) => (
-                                        <p key={i} className="text-sm text-slate-600 pl-6">• {s}</p>
-                                    ))}
+                                    <p className="text-sm text-slate-600 pl-6">{aiRecommendations.strength}</p>
                                 </div>
 
-                                {/* Weaknesses */}
+                                {/* Weakness */}
                                 <div className="space-y-2">
                                     <h4 className="text-sm font-bold text-amber-600 flex items-center gap-2">
-                                        <AlertTriangle className="w-4 h-4" /> Areas to Improve
+                                        <AlertTriangle className="w-4 h-4" /> Weakness
                                     </h4>
-                                    {aiRecommendations.weaknesses.map((w, i) => (
-                                        <p key={i} className="text-sm text-slate-600 pl-6">• {w}</p>
-                                    ))}
+                                    <p className="text-sm text-slate-600 pl-6">{aiRecommendations.weakness}</p>
                                 </div>
                             </div>
 
-                            {/* Recommendations */}
+                            {/* Recommendation */}
                             <div>
                                 <h4 className="text-sm font-bold text-indigo-600 flex items-center gap-2 mb-3">
-                                    <Lightbulb className="w-4 h-4" /> Recommendations
+                                    <Lightbulb className="w-4 h-4" /> Recommendation
                                 </h4>
                                 <div className="space-y-2">
-                                    {aiRecommendations.recommendations.map((r, i) => (
-                                        <div key={i} className="flex items-start gap-3 p-3.5 rounded-xl bg-indigo-50 border border-indigo-100">
-                                            <span className="w-6 h-6 rounded-full bg-indigo-600 flex items-center justify-center text-xs font-bold text-white shrink-0">
-                                                {i + 1}
-                                            </span>
-                                            <p className="text-sm text-slate-700">{r}</p>
-                                        </div>
-                                    ))}
+                                    <div className="flex items-start gap-3 p-3.5 rounded-xl bg-indigo-50 border border-indigo-100">
+                                        <span className="w-6 h-6 rounded-full bg-indigo-600 flex items-center justify-center text-xs font-bold text-white shrink-0">
+                                            1
+                                        </span>
+                                        <p className="text-sm text-slate-700">{aiRecommendations.recommendation}</p>
+                                    </div>
                                 </div>
                             </div>
-
-                            {/* Study Plan */}
-                            <div className="p-4 rounded-xl bg-violet-50 border border-violet-100">
-                                <h4 className="text-sm font-bold text-violet-700 flex items-center gap-2 mb-2">
-                                    <BookOpen className="w-4 h-4" /> Study Plan
-                                </h4>
-                                <p className="text-sm text-slate-700 leading-relaxed">{aiRecommendations.studyPlan}</p>
-                            </div>
                         </div>
-                    ) : (
-                        <p className="text-slate-400">Unable to generate recommendations. Try again later.</p>
-                    )}
+                    ) : null}
                 </div>
 
                 {/* Actions */}

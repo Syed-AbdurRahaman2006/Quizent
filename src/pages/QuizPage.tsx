@@ -7,7 +7,9 @@ import { getDemoQuizzes, getDemoQuestions, SEED_QUIZZES } from '../utils/seedDat
 import { getNextDifficulty, selectNextQuestion, getDifficultyLabel } from '../utils/adaptiveEngine';
 import { Question, Difficulty, Answer, Quiz } from '../types';
 import { Clock, AlertCircle, CheckCircle2, XCircle, ArrowRight, Trophy } from 'lucide-react';
-import { saveQuizResult, saveQuizProgress, clearQuizProgress } from '../utils/storage';
+import { saveQuizProgress, clearQuizProgress } from '../utils/storage';
+import { auth, db } from '../lib/firebase';
+import { collection, addDoc, serverTimestamp, doc, getDoc } from 'firebase/firestore';
 
 export default function QuizPage() {
     const { quizId } = useParams<{ quizId: string }>();
@@ -26,6 +28,8 @@ export default function QuizPage() {
     const [loading, setLoading] = useState(true);
     const [quizComplete, setQuizComplete] = useState(false);
     const [timeElapsed, setTimeElapsed] = useState(0);
+    const [questionStartTime, setQuestionStartTime] = useState<number>(Date.now());
+    const [showExplanation, setShowExplanation] = useState(false);
 
     const MAX_QUESTIONS = 9;
 
@@ -40,6 +44,7 @@ export default function QuizPage() {
             // Start with medium
             const firstQ = selectNextQuestion(qs, 'medium', new Set());
             setCurrentQuestion(firstQ);
+            setQuestionStartTime(Date.now());
         }
         setLoading(false);
     }, [quizId]);
@@ -61,40 +66,6 @@ export default function QuizPage() {
         if (showResult) return;
         setSelectedOption(index);
     };
-
-    const handleSubmitAnswer = useCallback(() => {
-        if (selectedOption === null || !currentQuestion) return;
-
-        const isCorrect = selectedOption === currentQuestion.correctAnswer;
-        const answer: Answer = {
-            id: `ans_${answers.length}`,
-            attemptId: 'current',
-            questionId: currentQuestion.id,
-            selectedOption,
-            isCorrect,
-            difficulty: currentQuestion.difficulty,
-            timestamp: new Date(),
-        };
-
-        const updatedAnswers = [...answers, answer];
-        setAnswers(updatedAnswers);
-        setAnsweredIds((prev) => new Set(prev).add(currentQuestion.id));
-        setShowResult(true);
-
-        // Persist progress to sessionStorage so refresh doesn't lose answers
-        if (quiz && quizId) {
-            const seedQuiz = SEED_QUIZZES.find((sq) => sq.title === quiz.title);
-            saveQuizProgress({
-                quizId,
-                quizTitle: quiz.title,
-                language: quiz.language,
-                topicName: seedQuiz?.topicName || quiz.title,
-                questionNumber,
-                answers: updatedAnswers,
-                timeElapsed,
-            });
-        }
-    }, [selectedOption, currentQuestion, answers, quiz, quizId, questionNumber, timeElapsed]);
 
     const handleNextQuestion = useCallback(() => {
         if (!currentQuestion) return;
@@ -120,8 +91,50 @@ export default function QuizPage() {
         setCurrentQuestion(nextQ);
         setSelectedOption(null);
         setShowResult(false);
+        setShowExplanation(false);
         setQuestionNumber((n) => n + 1);
+        setQuestionStartTime(Date.now()); // Reset question timer
     }, [currentQuestion, answers, currentDifficulty, questionNumber, answeredIds, questions]);
+
+    const handleSubmitAnswer = useCallback(() => {
+        if (selectedOption === null || !currentQuestion) return;
+
+        const isCorrect = selectedOption === currentQuestion.correctAnswer;
+        const timeSpent = Math.max(1, Math.floor((Date.now() - questionStartTime) / 1000));
+
+        const answer: Answer = {
+            id: `ans_${answers.length}`,
+            attemptId: 'current',
+            questionId: currentQuestion.id,
+            selectedOption,
+            isCorrect,
+            difficulty: currentQuestion.difficulty,
+            timeSpent,
+            timestamp: new Date(),
+        };
+
+        const updatedAnswers = [...answers, answer];
+        setAnswers(updatedAnswers);
+        setAnsweredIds((prev) => new Set(prev).add(currentQuestion.id));
+        setShowResult(true);
+
+        // Persist progress to sessionStorage so refresh doesn't lose answers
+        if (quiz && quizId) {
+            const seedQuiz = SEED_QUIZZES.find((sq) => sq.title === quiz.title);
+            saveQuizProgress({
+                quizId,
+                quizTitle: quiz.title,
+                language: quiz.language,
+                topicName: seedQuiz?.topicName || quiz.title,
+                questionNumber,
+                answers: updatedAnswers,
+                timeElapsed,
+            });
+        }
+
+        // Removed auto-advance because it causes stale closures on handleNextQuestion
+        // User will click the Next Button instead, allowing them to read explanations
+    }, [selectedOption, currentQuestion, answers, quiz, quizId, questionNumber, timeElapsed, questionStartTime, handleNextQuestion]);
 
     const handleViewResults = () => {
         const correct = answers.filter((a) => a.isCorrect).length;
@@ -129,35 +142,75 @@ export default function QuizPage() {
         const seedQuiz = SEED_QUIZZES.find((sq) => sq.title === quiz?.title);
         const topicName = seedQuiz?.topicName || quiz?.title || 'Unknown';
 
-        // Persist attempt permanently to localStorage
-        saveQuizResult({
-            quizId: quizId!,
-            quizTitle: quiz?.title || '',
-            language: quiz?.language || '',
-            topicName,
-            userId: user?.id || 'anonymous',
-            answers,
-            totalQuestions: answers.length,
-            timeElapsed,
+        // Complete migration: Save directly to Firestore ONLY
+        const saveToFirestore = async () => {
+            try {
+                const currentUser = auth.currentUser;
+                if (currentUser) {
+                    let finalName = user?.name || currentUser.displayName || 'User';
+                    let finalEmail = user?.email || currentUser.email || 'anonymous';
+
+                    // Priority: Fetch verified real name / email from the explicit `users` table
+                    try {
+                        const userDoc = await getDoc(doc(db, "users", currentUser.uid));
+                        if (userDoc.exists()) {
+                            const data = userDoc.data();
+                            if (data.name || data.fullName) finalName = data.name || data.fullName;
+                            if (data.email) finalEmail = data.email;
+                        }
+                    } catch (e) { /* Fallback to auth */ }
+
+                    const breakdown = { easy: { correct: 0, total: 0 }, medium: { correct: 0, total: 0 }, hard: { correct: 0, total: 0 } };
+                    answers.forEach((a) => {
+                        const d = a.difficulty as 'easy' | 'medium' | 'hard';
+                        if (breakdown[d]) {
+                            breakdown[d].total += 1;
+                            if (a.isCorrect) breakdown[d].correct += 1;
+                        }
+                    });
+
+                    // Exact Firestore Schema explicitly requested
+                    const attempt = {
+                        userId: currentUser.uid,
+                        userName: finalName,
+                        userEmail: finalEmail,
+                        quizId: quizId,
+                        language: quiz?.language || 'JavaScript',
+                        topic: topicName,
+                        score: correct,
+                        totalQuestions: answers.length,
+                        accuracy,
+                        timeTaken: timeElapsed,
+                        difficultyBreakdown: breakdown,
+                        createdAt: serverTimestamp() // native firestore timestamp
+                    };
+
+                    await addDoc(collection(db, "quizAttempts"), attempt);
+                }
+            } catch (err) {
+                console.error("Failed to save attempt to Firestore:", err);
+            }
+        };
+
+        saveToFirestore().then(() => {
+            // Clear session progress now that quiz is done
+            clearQuizProgress();
+
+            // Pass rich data to Results page via sessionStorage
+            sessionStorage.setItem('quizResults', JSON.stringify({
+                quizId,
+                quizTitle: quiz?.title,
+                language: quiz?.language,
+                topicName,
+                answers,
+                score: correct,
+                totalQuestions: answers.length,
+                accuracy,
+                timeElapsed,
+            }));
+
+            navigate(`/results/${quizId}`);
         });
-
-        // Clear session progress now that quiz is done
-        clearQuizProgress();
-
-        // Pass rich data to Results page via sessionStorage
-        sessionStorage.setItem('quizResults', JSON.stringify({
-            quizId,
-            quizTitle: quiz?.title,
-            language: quiz?.language,
-            topicName,
-            answers,
-            score: correct,
-            totalQuestions: answers.length,
-            accuracy,
-            timeElapsed,
-        }));
-
-        navigate(`/results/${quizId}`);
     };
 
     if (loading) return <Layout><LoadingSpinner size="lg" /></Layout>;
@@ -179,6 +232,7 @@ export default function QuizPage() {
 
     if (quizComplete) {
         const correct = answers.filter((a) => a.isCorrect).length;
+        const incorrect = answers.length - correct;
         const accuracy = (correct / answers.length) * 100;
 
         return (
@@ -191,20 +245,24 @@ export default function QuizPage() {
                         <h2 className="text-2xl font-extrabold text-slate-900 mb-1">Quiz Complete!</h2>
                         <p className="text-slate-500 mb-8">{quiz.title}</p>
 
-                        <div className="grid grid-cols-3 gap-4 mb-8">
-                            <div className="p-4 rounded-xl bg-indigo-50 border border-indigo-100">
-                                <p className="text-2xl font-extrabold text-indigo-600">{correct}/{answers.length}</p>
-                                <p className="text-xs text-slate-500 font-medium mt-1">Score</p>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+                            <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-100 flex flex-col items-center justify-center">
+                                <p className="text-2xl font-extrabold text-emerald-600">{correct}</p>
+                                <p className="text-xs text-slate-500 font-medium mt-1 uppercase tracking-wider">Correct</p>
                             </div>
-                            <div className="p-4 rounded-xl bg-violet-50 border border-violet-100">
+                            <div className="p-4 rounded-xl bg-red-50 border border-red-100 flex flex-col items-center justify-center">
+                                <p className="text-2xl font-extrabold text-red-600">{incorrect}</p>
+                                <p className="text-xs text-slate-500 font-medium mt-1 uppercase tracking-wider">Incorrect</p>
+                            </div>
+                            <div className="p-4 rounded-xl bg-violet-50 border border-violet-100 flex flex-col items-center justify-center">
                                 <p className={`text-2xl font-extrabold ${accuracy >= 70 ? 'text-indigo-600' : accuracy >= 40 ? 'text-violet-600' : 'text-cyan-600'}`}>
                                     {accuracy.toFixed(0)}%
                                 </p>
-                                <p className="text-xs text-slate-500 font-medium mt-1">Accuracy</p>
+                                <p className="text-xs text-slate-500 font-medium mt-1 uppercase tracking-wider">Accuracy</p>
                             </div>
-                            <div className="p-4 rounded-xl bg-teal-50 border border-teal-100">
-                                <p className="text-2xl font-extrabold text-teal-600">{formatTime(timeElapsed)}</p>
-                                <p className="text-xs text-slate-500 font-medium mt-1">Time</p>
+                            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 flex flex-col items-center justify-center">
+                                <p className="text-2xl font-extrabold text-slate-700">{formatTime(timeElapsed)}</p>
+                                <p className="text-xs text-slate-500 font-medium mt-1 uppercase tracking-wider">Total Time</p>
                             </div>
                         </div>
 
@@ -315,29 +373,52 @@ export default function QuizPage() {
 
                 {/* Feedback */}
                 {showResult && (
-                    <div className={`glass-card p-4 mb-6 border-l-4 ${isCorrect ? 'border-l-emerald-500 bg-emerald-50' : 'border-l-red-400 bg-red-50'}`}>
-                        <div className="flex items-center gap-2">
-                            {isCorrect ? (
-                                <>
-                                    <CheckCircle2 className="w-5 h-5 text-emerald-600" />
-                                    <span className="font-bold text-emerald-700">Correct!</span>
-                                    <span className="text-emerald-600 text-sm">Great job!</span>
-                                </>
-                            ) : (
-                                <>
-                                    <XCircle className="w-5 h-5 text-red-500" />
-                                    <span className="font-bold text-red-600">Incorrect</span>
-                                    <span className="text-red-500 text-sm">
-                                        The correct answer was {String.fromCharCode(65 + currentQuestion.correctAnswer)}
-                                    </span>
-                                </>
-                            )}
+                    <div className="flex flex-col gap-3 mb-6">
+                        <div className={`glass-card p-4 border-l-4 ${isCorrect ? 'border-l-emerald-500 bg-emerald-50' : 'border-l-red-500 bg-red-50'}`}>
+                            <div className="flex items-center gap-2">
+                                {isCorrect ? (
+                                    <>
+                                        <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                                        <span className="font-bold text-emerald-600">Correct Answer</span>
+                                    </>
+                                ) : (
+                                    <div className="flex flex-col">
+                                        <div className="flex items-center gap-2 mb-1">
+                                            <XCircle className="w-5 h-5 text-red-600" />
+                                            <span className="font-bold text-red-600">Incorrect</span>
+                                        </div>
+                                        <span className="text-red-500 font-medium">
+                                            Correct Answer: {currentQuestion.options[currentQuestion.correctAnswer]}
+                                        </span>
+                                    </div>
+                                )}
+                            </div>
                         </div>
+
+                        {!isCorrect && currentQuestion.explanation && (
+                            <div className="flex flex-col items-start gap-3">
+                                <button
+                                    onClick={() => setShowExplanation(!showExplanation)}
+                                    className="text-sm font-semibold text-indigo-600 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 px-4 py-2 rounded-lg transition-colors"
+                                >
+                                    {showExplanation ? 'Hide Explanation' : 'Show Explanation'}
+                                </button>
+
+                                {showExplanation && (
+                                    <div className="w-full bg-slate-50 border border-slate-200 rounded-lg p-5">
+                                        <p className="text-sm font-semibold text-slate-700 mb-1">Explanation:</p>
+                                        <p className="text-sm text-slate-600 leading-relaxed">
+                                            {currentQuestion.explanation}
+                                        </p>
+                                    </div>
+                                )}
+                            </div>
+                        )}
                     </div>
                 )}
 
                 {/* Action Button */}
-                <div className="flex justify-end">
+                <div className="flex justify-end mt-4">
                     {!showResult ? (
                         <button
                             onClick={handleSubmitAnswer}

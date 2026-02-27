@@ -11,7 +11,8 @@ import {
     Legend,
 } from 'chart.js';
 import { Bar } from 'react-chartjs-2';
-import { getAttempts, getTopicPerformances, StoredAttempt } from '../../utils/storage';
+import { db } from '../../lib/firebase';
+import { collection, doc, getDoc, onSnapshot } from 'firebase/firestore';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend);
 
@@ -25,9 +26,9 @@ interface UserData {
     recentAttempts: { quiz: string; accuracy: number; date: string }[];
 }
 
-function buildUsersFromAttempts(attempts: StoredAttempt[]): UserData[] {
+function buildUsersFromAttempts(attempts: any[], profilesMap: Record<string, { name: string, email: string }>): UserData[] {
     // Group by userId
-    const map: Record<string, StoredAttempt[]> = {};
+    const map: Record<string, any[]> = {};
     attempts.forEach((a) => {
         const key = a.userId || 'anonymous';
         if (!map[key]) map[key] = [];
@@ -42,27 +43,45 @@ function buildUsersFromAttempts(attempts: StoredAttempt[]): UserData[] {
         // Per-topic avg accuracy
         const topicMap: Record<string, { total: number; count: number }> = {};
         userAttempts.forEach((a) => {
-            if (!topicMap[a.topicName]) topicMap[a.topicName] = { total: 0, count: 0 };
-            topicMap[a.topicName].total += a.accuracy;
-            topicMap[a.topicName].count += 1;
+            if (!topicMap[a.topic]) topicMap[a.topic] = { total: 0, count: 0 };
+            topicMap[a.topic].total += a.accuracy;
+            topicMap[a.topic].count += 1;
         });
         const topicPerformances = Object.entries(topicMap).map(([topic, v]) => ({
             topic,
             accuracy: Math.round(v.total / v.count),
         }));
 
+        const fallbackName = profilesMap[userId]?.name || userId;
+        const fallbackEmail = profilesMap[userId]?.email || (userId.includes('@') ? userId : `${userId}@quizent.app`);
+        const finalName = userAttempts[0]?.userName && userAttempts[0].userName !== 'User' ? userAttempts[0].userName : fallbackName;
+        const finalEmail = userAttempts[0]?.userEmail && userAttempts[0].userEmail !== 'anonymous' ? userAttempts[0].userEmail : fallbackEmail;
+
         return {
             id: userId,
-            name: userId === 'anonymous' ? 'Guest User' : userId,
-            email: userId.includes('@') ? userId : `${userId}@quizent.app`,
+            name: finalName === 'anonymous' ? 'Guest User' : finalName,
+            email: finalEmail,
             totalAttempts: userAttempts.length,
             avgAccuracy,
             topicPerformances,
-            recentAttempts: userAttempts.slice(0, 5).map((a) => ({
-                quiz: a.quizTitle,
-                accuracy: Math.round(a.accuracy),
-                date: a.date.slice(0, 10),
-            })),
+            recentAttempts: userAttempts.slice(0, 5).map((a) => {
+                let dateStr = "Unknown";
+                if (a.createdAt && typeof a.createdAt.toDate === 'function') {
+                    dateStr = a.createdAt.toDate().toISOString().slice(0, 10);
+                } else if (a.timestamp && typeof a.timestamp.toDate === 'function') {
+                    dateStr = a.timestamp.toDate().toISOString().slice(0, 10);
+                } else if (a.date && typeof a.date === 'string') {
+                    dateStr = a.date.slice(0, 10);
+                } else {
+                    dateStr = new Date().toISOString().slice(0, 10);
+                }
+
+                return {
+                    quiz: a.topic || 'Unknown',
+                    accuracy: Math.round(a.accuracy || 0),
+                    date: dateStr,
+                };
+            }),
         };
     });
 }
@@ -74,10 +93,51 @@ export default function UserAnalytics() {
     const [searchQuery, setSearchQuery] = useState('');
 
     useEffect(() => {
-        const stored = getAttempts();
-        const userData = buildUsersFromAttempts(stored);
-        setUsers(userData);
-        setLoading(false);
+        const unsubscribe = onSnapshot(collection(db, "quizAttempts"), async (attemptsSnap) => {
+            try {
+                const stored: any[] = [];
+                attemptsSnap.forEach(doc => stored.push({ id: doc.id, ...doc.data() }));
+
+                // Sort attempts by timestamp natively so recents slice works correctly
+                stored.sort((a, b) => {
+                    let dateA = new Date(a.date || Date.now()).getTime();
+                    let dateB = new Date(b.date || Date.now()).getTime();
+                    // Schema update: use createdAt over timestamp
+                    if (a.createdAt && typeof a.createdAt.toDate === 'function') dateA = a.createdAt.toDate().getTime();
+                    if (b.createdAt && typeof b.createdAt.toDate === 'function') dateB = b.createdAt.toDate().getTime();
+                    if (a.timestamp && typeof a.timestamp.toDate === 'function') dateA = a.timestamp.toDate().getTime();
+                    if (b.timestamp && typeof b.timestamp.toDate === 'function') dateB = b.timestamp.toDate().getTime();
+                    return dateB - dateA;
+                });
+
+                // Fetch Real User Profiles for UIDs
+                const userProfilesMap: Record<string, { name: string, email: string }> = {};
+                const uniqueUids = Array.from(new Set(stored.map(a => a.userId)));
+
+                await Promise.all(uniqueUids.map(async (uid) => {
+                    if (!uid || uid === 'anonymous') return;
+                    try {
+                        const userDoc = await getDoc(doc(db, "users", uid));
+                        if (userDoc.exists()) {
+                            const data = userDoc.data();
+                            userProfilesMap[uid] = {
+                                name: data.name || data.fullName || 'Unknown User',
+                                email: data.email || 'No Email'
+                            };
+                        }
+                    } catch (e) { /* ignore single fetch errors */ }
+                }));
+
+                const userData = buildUsersFromAttempts(stored, userProfilesMap);
+                setUsers(userData);
+            } catch (err) {
+                console.error("Failed to load user analytics:", err);
+            } finally {
+                setLoading(false);
+            }
+        });
+
+        return () => unsubscribe();
     }, []);
 
     if (loading) return <Layout><LoadingSpinner size="lg" /></Layout>;
